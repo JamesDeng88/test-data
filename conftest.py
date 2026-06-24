@@ -9,11 +9,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption("--compare-ref", default=None,
                      help="Path to read reference JSON (second platform).")
     parser.addoption("--mmlu-subjects", default="abstract_algebra,astronomy",
-                     help="Comma-separated MMLU subjects.")
+                     help="Comma-separated subjects, or 'all' for all 57 subjects.")
     parser.addoption("--mmlu-limit", default=50, type=int,
-                     help="Max questions per subject.")
+                     help="Max questions per subject. 0 = use full test split.")
     parser.addoption("--mmlu-fewshot", default=0, type=int,
                      help="Number of fewshot examples (0 or 5).")
+    parser.addoption("--flip-output", default=None,
+                     help="Path to write flip cases as JSON. E.g. /tmp/flips.json")
     parser.addoption("--max-model-len", default=2048, type=int,
                      help="vllm max_model_len. 1024 is enough for MMLU.")
     parser.addoption("--max-num-seqs", default=16, type=int,

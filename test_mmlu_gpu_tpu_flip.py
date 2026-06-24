@@ -63,6 +63,29 @@ _DESCRIPTION_TMPL = (
 )
 _QUESTION_TMPL = "{question}\nA. {a}\nB. {b}\nC. {c}\nD. {d}\nAnswer:"
 
+# All 57 MMLU subjects — used when --mmlu-subjects=all
+ALL_MMLU_SUBJECTS = [
+    "abstract_algebra", "anatomy", "astronomy", "business_ethics",
+    "clinical_knowledge", "college_biology", "college_chemistry",
+    "college_computer_science", "college_mathematics", "college_medicine",
+    "college_physics", "computer_security", "conceptual_physics",
+    "econometrics", "electrical_engineering", "elementary_mathematics",
+    "formal_logic", "global_facts", "high_school_biology",
+    "high_school_chemistry", "high_school_computer_science",
+    "high_school_european_history", "high_school_geography",
+    "high_school_government_and_politics", "high_school_macroeconomics",
+    "high_school_mathematics", "high_school_microeconomics",
+    "high_school_physics", "high_school_psychology", "high_school_statistics",
+    "high_school_us_history", "high_school_world_history", "human_aging",
+    "human_sexuality", "international_law", "jurisprudence",
+    "logical_fallacies", "machine_learning", "management", "marketing",
+    "medical_genetics", "miscellaneous", "moral_disputes", "moral_scenarios",
+    "nutrition", "philosophy", "prehistory", "professional_accounting",
+    "professional_law", "professional_medicine", "professional_psychology",
+    "public_relations", "security_studies", "sociology", "us_foreign_policy",
+    "virology", "world_religions",
+]
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -79,6 +102,8 @@ class ChoiceResult:
 class QuestionResult:
     subject: str
     question_idx: int
+    question_text: str          # raw question (no choices) — for flip report
+    choice_texts: list[str]     # ["choice A text", "choice B text", ...]
     context_token_ids: list[int]
     choices: list[ChoiceResult]
     predicted: str
@@ -95,6 +120,9 @@ def _load_mmlu_questions(subjects: list[str], limit: int, fewshot: int) -> list[
         from datasets import load_dataset
     except ImportError:
         pytest.skip("datasets not installed — pip install datasets")
+
+    if subjects == ["all"]:
+        subjects = ALL_MMLU_SUBJECTS
 
     questions: list[dict] = []
     for subject in subjects:
@@ -115,10 +143,13 @@ def _load_mmlu_questions(subjects: list[str], limit: int, fewshot: int) -> list[
                 )
 
         prefix = description + fewshot_str
-        for idx, ex in enumerate(list(ds)[:limit]):
+        rows = list(ds) if limit <= 0 else list(ds)[:limit]
+        for idx, ex in enumerate(rows):
             questions.append({
                 "subject": subject,
                 "question_idx": idx,
+                "question_text": ex["question"].strip(),
+                "choice_texts": ex["choices"],
                 "context_str": prefix + _QUESTION_TMPL.format(
                     question=ex["question"].strip(),
                     a=ex["choices"][0], b=ex["choices"][1],
@@ -126,6 +157,7 @@ def _load_mmlu_questions(subjects: list[str], limit: int, fewshot: int) -> list[
                 ),
                 "correct_idx": ex["answer"],
             })
+    print(f"Loaded {len(questions)} questions from {len(subjects)} subjects.")
     return questions
 
 
@@ -188,6 +220,8 @@ def _run_loglikelihoods(llm: LLM, questions: list[dict]) -> list[QuestionResult]
         question_results.append(QuestionResult(
             subject=q["subject"],
             question_idx=q["question_idx"],
+            question_text=q.get("question_text", ""),
+            choice_texts=q.get("choice_texts", []),
             context_token_ids=ctx_ids_per_q[q_idx],
             choices=choices,
             predicted=LABELS[predicted_idx],
@@ -205,6 +239,8 @@ def _deserialize(data: list[dict]) -> list[QuestionResult]:
     out = []
     for d in data:
         d["choices"] = [ChoiceResult(**c) for c in d["choices"]]
+        d.setdefault("question_text", "")
+        d.setdefault("choice_texts", [])
         out.append(QuestionResult(**d))
     return out
 
@@ -233,6 +269,7 @@ def cfg(pytestconfig: pytest.Config) -> dict[str, Any]:
         "subjects":       pytestconfig.getoption("--mmlu-subjects").split(","),
         "limit":          pytestconfig.getoption("--mmlu-limit"),
         "fewshot":        pytestconfig.getoption("--mmlu-fewshot"),
+        "flip_output":    pytestconfig.getoption("--flip-output"),
         "max_model_len":          pytestconfig.getoption("--max-model-len"),
         "max_num_seqs":           pytestconfig.getoption("--max-num-seqs"),
         "max_num_batched_tokens": pytestconfig.getoption("--max-num-batched-tokens"),
@@ -395,6 +432,8 @@ class TestMmluFlip:
                 flips.append({
                     "subject": cur.subject,
                     "q_idx": cur.question_idx,
+                    "question_text": cur.question_text,
+                    "choice_texts": cur.choice_texts,
                     "correct": cur.correct,
                     f"{ref_platform}_predicted": ref.predicted,
                     f"{tag}_predicted": cur.predicted,
@@ -440,7 +479,7 @@ class TestMmluFlip:
 
         if flips:
             print(f"\nDetailed flips ({len(flips)}):")
-            hdr = (f"  {'Subject':<22} {'Q':>4}  {'OK':>2}  "
+            hdr = (f"  {'Subject':<30} {'Q':>4}  {'OK':>2}  "
                    f"{ref_platform.upper():>4}→  {tag.upper():>4}←  "
                    f"{'Margin':>8}  {'MaxΔ':>8}  Notes")
             print(hdr)
@@ -457,13 +496,39 @@ class TestMmluFlip:
                 else:
                     notes = "both right?!"
 
-                print(f"  {f['subject']:<22} {f['q_idx']:>4}  {f['correct']:>2}  "
+                print(f"  {f['subject']:<30} {f['q_idx']:>4}  {f['correct']:>2}  "
                       f"{f[ref_platform+'_predicted']:>4}→  {f[tag+'_predicted']:>4}←  "
                       f"{f['margin']:>8.5f}  {f['max_delta']:>8.5f}  {notes}")
+                # Show the question so it's clear which one flipped
+                q_preview = f['question_text'][:120].replace('\n', ' ')
+                print(f"    Q: {q_preview}")
+                if f['choice_texts']:
+                    for lbl, txt in zip(LABELS, f['choice_texts']):
+                        marker = " ←correct" if lbl == f['correct'] else ""
+                        print(f"       {lbl}. {txt}{marker}")
                 ref_row = "  ".join(f"{l}:{f[ref_platform+'_lls'][l]}" for l in LABELS)
                 cur_row = "  ".join(f"{l}:{f[tag+'_lls'][l]}" for l in LABELS)
                 print(f"    {ref_platform}: {ref_row}")
                 print(f"    {tag}:  {cur_row}")
+                print()
+
+        # Save flip cases to JSON if requested
+        flip_output = cfg.get("flip_output")
+        if flip_output and flips:
+            flip_data = {
+                "ref_platform": ref_platform,
+                "current_platform": tag,
+                "model": cfg["model_path"],
+                "subjects": cfg["subjects"],
+                "fewshot": cfg["fewshot"],
+                "total_questions": len(current_results),
+                "flip_count": len(flips),
+                "ref_accuracy": ref_accuracy,
+                "current_accuracy": current_accuracy,
+                "flips": flips,
+            }
+            Path(flip_output).write_text(json.dumps(flip_data, indent=2))
+            print(f"Flip cases saved to: {flip_output}")
 
         print(f"\n{'='*W}")
         print("KEY INSIGHT:")
