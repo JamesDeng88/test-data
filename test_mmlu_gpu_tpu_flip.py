@@ -233,19 +233,29 @@ def cfg(pytestconfig: pytest.Config) -> dict[str, Any]:
         "subjects":       pytestconfig.getoption("--mmlu-subjects").split(","),
         "limit":          pytestconfig.getoption("--mmlu-limit"),
         "fewshot":        pytestconfig.getoption("--mmlu-fewshot"),
-        "max_model_len":  pytestconfig.getoption("--max-model-len"),
-        "max_num_seqs":   pytestconfig.getoption("--max-num-seqs"),
+        "max_model_len":          pytestconfig.getoption("--max-model-len"),
+        "max_num_seqs":           pytestconfig.getoption("--max-num-seqs"),
+        "max_num_batched_tokens": pytestconfig.getoption("--max-num-batched-tokens"),
+        "gpu_memory_utilization": pytestconfig.getoption("--gpu-memory-utilization"),
+        "tensor_parallel_size":   pytestconfig.getoption("--tensor-parallel-size"),
     }
 
 
 @pytest.fixture(scope="module")
 def llm(cfg: dict) -> LLM:
+    max_num_batched_tokens = cfg["max_num_batched_tokens"] or cfg["max_model_len"]
     print(f"\nLoading model: {cfg['model_path']}")
+    print(f"  max_model_len={cfg['max_model_len']}  max_num_seqs={cfg['max_num_seqs']}"
+          f"  max_num_batched_tokens={max_num_batched_tokens}"
+          f"  gpu_memory_utilization={cfg['gpu_memory_utilization']}"
+          f"  tensor_parallel_size={cfg['tensor_parallel_size']}")
     return LLM(
         model=cfg["model_path"],
         max_model_len=cfg["max_model_len"],
         max_num_seqs=cfg["max_num_seqs"],
-        max_num_batched_tokens=cfg["max_model_len"],
+        max_num_batched_tokens=max_num_batched_tokens,
+        gpu_memory_utilization=cfg["gpu_memory_utilization"],
+        tensor_parallel_size=cfg["tensor_parallel_size"],
         enable_prefix_caching=False,
         enable_chunked_prefill=False,
         dtype="bfloat16",
